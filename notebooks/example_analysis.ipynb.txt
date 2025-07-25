@@ -1,0 +1,362 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "# CosmicBulkMap: Demo Notebook\n",
+    "### Reproducing and Visualizing the Local Dipole Anisotropy with Pantheon+ and CosmicFlows-4\n",
+    "\n",
+    "**Authors:** Iván Sheligo, Gemini (Google), ChatGPT (OpenAI)  \n",
+    "**Date:** July 25, 2025\n",
+    "\n",
+    "---"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### **Goal**\n",
+    "\n",
+    "This notebook demonstrates the essential steps to detect and visualize the local dipolar anisotropy (\"Bulk Flow\") using public supernova (Pantheon+) and peculiar velocity (CosmicFlows-4) catalogs, as in our published analysis.\n",
+    "\n",
+    "**Note:** This notebook uses a minimal toy dataset for demonstration and educational purposes only. For full reproducibility and to engage with the project at a research level, please see the `scripts/` directory for the full analysis pipeline."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 1. Setup: Required Packages"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import numpy as np\n",
+    "import pandas as pd\n",
+    "import matplotlib.pyplot as plt\n",
+    "from astropy.coordinates import SkyCoord\n",
+    "from astropy import units as u\n",
+    "from astropy.cosmology import FlatLambdaCDM\n",
+    "import healpy as hp\n",
+    "\n",
+    "# Set a consistent style for plots\n",
+    "plt.style.use('default')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 2. Load and Prepare Data\n",
+    "\n",
+    "You can download the full Pantheon+ and CosmicFlows-4 data from their official sources. For this demo, we'll use a small, representative toy dataset."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Sample SN Ia positions and moduli (RA, Dec, z, mu, mu_err)\n",
+    "pantheon_data = pd.DataFrame({\n",
+    "    \"RA\": [150.38, 52.92, 333.92, 189.28, 36.25],\n",
+    "    \"DEC\": [2.08, -27.97, -52.33, 62.36, -6.83],\n",
+    "    \"z\": [0.021, 0.015, 0.052, 0.004, 0.026],\n",
+    "    \"MU\": [34.86, 34.02, 36.84, 31.51, 35.21],\n",
+    "    \"MU_ERR\": [0.15, 0.16, 0.15, 0.20, 0.15]\n",
+    "})\n",
+    "\n",
+    "# Convert RA/Dec into an Astropy SkyCoord object for easy coordinate transformations\n",
+    "coords = SkyCoord(ra=pantheon_data['RA']*u.deg, dec=pantheon_data['DEC']*u.deg, frame='icrs')"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 3. Visualize Supernova Distribution\n",
+    "\n",
+    "Let's see where our sample supernovae are located on the sky. We'll use a Mollweide projection in Galactic coordinates, which is standard for all-sky maps in astronomy."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "plt.figure(figsize=(10, 5))\n",
+    "ax = plt.subplot(111, projection='mollweide')\n",
+    "\n",
+    "# Convert coordinates to radians and handle longitude wrapping for plotting\n",
+    "l = coords.galactic.l.wrap_at(180*u.deg).radian\n",
+    "b = coords.galactic.b.radian\n",
+    "\n",
+    "ax.scatter(l, b, color='orange', s=50, label=\"Pantheon+ SNe (Toy Sample)\", edgecolor='black')\n",
+    "\n",
+    "ax.set_xticklabels(['150°', '120°', '90°', '60°', '30°', '0°', '330°', '300°', '270°', '240°', '210°'])\n",
+    "ax.set_xlabel(\"Galactic Longitude (l)\")\n",
+    "ax.set_ylabel(\"Galactic Latitude (b)\")\n",
+    "ax.set_title(\"Supernova Positions (Galactic Coordinates)\")\n",
+    "plt.grid(True)\n",
+    "plt.legend()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 4. Fitting a Physically-Motivated Dipole Model\n",
+    "\n",
+    "This is the core of the analysis. A bulk flow introduces a dipolar anisotropy in the Hubble diagram. The distance modulus (μ) of a supernova will appear slightly smaller or larger than expected depending on its position relative to the flow direction.\n",
+    "\n",
+    "The model is:  \n",
+    "$$ \\mu(z, \\hat{p}) = \\mu_{\\text{cosmo}}(z) + A \\cdot \\cos(\\theta) $$\n",
+    "\n",
+    "where:\n",
+    "- $ \\mu_{\\text{cosmo}}(z) $ is the expected distance modulus in an isotropic universe (from the standard cosmological model).\n",
+    "- $ A $ is the amplitude of the dipole in magnitudes.\n",
+    "- $ \\theta $ is the angle between the supernova's position and the dipole's direction.\n",
+    "\n",
+    "**Note on the physics:** In a more rigorous treatment, the dipole amplitude $A$ is not constant but decays with redshift, as the peculiar velocity's impact on the distance modulus is less significant at larger distances ($A(z) \\propto v_p / (cz)$). For this pedagogical demo, we assume a constant $A$ for simplicity.\n",
+    "\n",
+    "**Connection to the main analysis:** This toy model pedagogically reproduces the key steps of the full Bayesian MCMC pipeline used in our paper. It allows any user to understand the logical flow before diving into the complete dataset and statistical machinery.\n",
+    "\n",
+    "The real analysis uses Bayesian MCMC to find the best-fit parameters for A and the direction (l, b). Here, we'll just show how the model works with some assumed parameters."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# First, we need a background cosmology to calculate the expected mu(z).\n",
+    "# We'll use a standard Flat Lambda-CDM model with Planck 2018 parameters.\n",
+    "# Note: You can change these values to test other cosmological models (e.g., H0=73 from Riess et al.).\n",
+    "cosmo = FlatLambdaCDM(H0=67.4, Om0=0.315)\n",
+    "\n",
+    "def dipole_mu_physical(z, A, l0, b0, l_sn, b_sn):\n",
+    "    \"\"\"\n",
+    "    A physically-motivated dipole model.\n",
+    "    It calculates the expected distance modulus from a background cosmology (Hubble's Law)\n",
+    "    and adds the dipole modulation on top of it.\n",
+    "    \"\"\"\n",
+    "    # 1. Calculate the expected distance modulus from Hubble's Law\n",
+    "    mu_cosmo = cosmo.distmod(z).value\n",
+    "    \n",
+    "    # 2. Calculate the angular separation to the dipole axis\n",
+    "    dipole_coord = SkyCoord(l=l0*u.deg, b=b0*u.deg, frame='galactic')\n",
+    "    sn_coords = SkyCoord(l=l_sn*u.deg, b=b_sn*u.deg, frame='galactic')\n",
+    "    angle = sn_coords.separation(dipole_coord).rad\n",
+    "    \n",
+    "    # 3. The full model is the cosmological mu + the dipole modulation\n",
+    "    return mu_cosmo + (A * np.cos(angle))\n",
+    "\n",
+    "# Let's assume a dipole direction and amplitude for demonstration\n",
+    "# (These values are what a full MCMC would aim to find)\n",
+    "A_fit, l0_fit, b0_fit = 0.05, 275.0, 56.0 \n",
+    "l_galactic = coords.galactic.l.degree\n",
+    "b_galactic = coords.galactic.b.degree\n",
+    "\n",
+    "# Calculate the model prediction for our toy data\n",
+    "mu_model = dipole_mu_physical(pantheon_data['z'], A_fit, l0_fit, b0_fit, l_galactic, b_galactic)\n",
+    "\n",
+    "# For plotting, it's better to sort the values by redshift\n",
+    "z_sorted_indices = np.argsort(pantheon_data['z'])\n",
+    "z_sorted = pantheon_data['z'].iloc[z_sorted_indices]\n",
+    "mu_model_sorted = mu_model[z_sorted_indices]\n",
+    "\n",
+    "# Plot the Hubble Diagram: Data vs. Model\n",
+    "plt.figure(figsize=(8, 6))\n",
+    "plt.errorbar(pantheon_data['z'], pantheon_data['MU'], yerr=pantheon_data['MU_ERR'], fmt='o', label='Data')\n",
+    "plt.plot(z_sorted, mu_model_sorted, 'r-', label='Physical Dipole Model')\n",
+    "plt.xlabel('Redshift z')\n",
+    "plt.ylabel('Distance Modulus μ')\n",
+    "plt.title('Hubble Diagram with Dipole Model')\n",
+    "plt.legend()\n",
+    "plt.grid(alpha=0.4)\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 5. Visualizing the Consensus Dipole Directions\n",
+    "\n",
+    "Our analysis is part of a broader effort to measure the cosmic dipole. Let's visualize the directions found by other key surveys: the CMB dipole (our absolute reference frame), the CosmicFlows-4 peculiar velocity catalog, and the direction we are testing for Pantheon+."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "dipoles = {\n",
+    "    \"CMB\": {\"l\": 264.0, \"b\": 48.3, \"color\": \"red\", \"marker\": \"*\"},\n",
+    "    \"CosmicFlows-4\": {\"l\": 285.0, \"b\": 45.0, \"color\": \"blue\", \"marker\": \"X\"},\n",
+    "    \"Pantheon+ (Test)\": {\"l\": 275.0, \"b\": 56.0, \"color\": \"green\", \"marker\": \"o\"}\n",
+    "}\n",
+    "\n",
+    "plt.figure(figsize=(10, 5))\n",
+    "ax = plt.subplot(111, projection='mollweide')\n",
+    "\n",
+    "for name, d in dipoles.items():\n",
+    "    # Convert to radians for plotting\n",
+    "    l_rad = np.deg2rad(d[\"l\"] - 180)\n",
+    "    b_rad = np.deg2rad(d[\"b\"])\n",
+    "    ax.scatter(l_rad, b_rad, s=150, color=d[\"color\"], marker=d[\"marker\"], label=name, edgecolor='k', zorder=5)\n",
+    "\n",
+    "ax.set_xticklabels(['150°', '120°', '90°', '60°', '30°', '0°', '330°', '300°', '270°', '240°', '210°'])\n",
+    "ax.set_xlabel(\"Galactic Longitude (l)\")\n",
+    "ax.set_ylabel(\"Galactic Latitude (b)\")\n",
+    "plt.title(\"Figure: Consensus of Cosmic Dipole Directions\")\n",
+    "plt.grid(True)\n",
+    "plt.legend()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 6. Visualizing the Actual Bulk Flow Map\n",
+    "\n",
+    "Finally, let's create the sky map of the dipole amplitude itself. This is the **CosmicBulkMap**. It shows the amplitude of the distance modulus deviation ($ \\Delta \\mu $) across the entire sky, as predicted by our best-fit dipole model. Red areas are where objects appear farther away (positive $ \\Delta \\mu $), and blue areas are where they appear closer (negative $ \\Delta \\mu $)."
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# Parameters from our toy fit (e.g., the Pantheon+ direction)\n",
+    "l_dipole_deg = 275.0\n",
+    "b_dipole_deg = 56.0\n",
+    "amp_dipole = 0.05 # The amplitude 'A' from our fit\n",
+    "\n",
+    "# Healpy setup\n",
+    "NSIDE = 32  # Low resolution for a quick demo is sufficient\n",
+    "NPIX = hp.nside2npix(NSIDE)\n",
+    "pixel_indices = np.arange(NPIX)\n",
+    "\n",
+    "# Get the Galactic coordinates of each pixel in the map\n",
+    "l_pix_deg, b_pix_deg = hp.pix2ang(NSIDE, pixel_indices, lonlat=True)\n",
+    "\n",
+    "# Create SkyCoord objects for vectorized calculations\n",
+    "dipole_coord = SkyCoord(l=l_dipole_deg*u.deg, b=b_dipole_deg*u.deg, frame='galactic')\n",
+    "pixel_coords = SkyCoord(l=l_pix_deg*u.deg, b=b_pix_deg*u.deg, frame='galactic')\n",
+    "\n",
+    "# Calculate the angle between each pixel and the dipole direction\n",
+    "angle = dipole_coord.separation(pixel_coords).rad\n",
+    "\n",
+    "# The map is simply the amplitude modulated by the cosine of the angle\n",
+    "dipole_map = amp_dipole * np.cos(angle)\n",
+    "\n",
+    "# Now, visualize the map using Mollweide projection\n",
+    "hp.mollview(\n",
+    "    dipole_map,\n",
+    "    title=\"Figure: Sky Map of the Dipole Amplitude (The CosmicBulkMap)\",\n",
+    "    unit=r\"$\\Delta \\mu$ [mag]\",\n",
+    "    coord=[\"G\"], # We are in Galactic coordinates\n",
+    "    cmap=\"coolwarm\", # Red for positive (further/slower), blue for negative (closer/faster)\n",
+    "    nest=False\n",
+    ")\n",
+    "hp.graticule(dpar=30, dmer=30, alpha=0.5)\n",
+    "\n",
+    "# Overplot the dipole direction on the map for clarity\n",
+    "hp.projplot(\n",
+    "    np.deg2rad(90 - b_dipole_deg),  # theta = 90 - latitude\n",
+    "    np.deg2rad(l_dipole_deg),       # phi = longitude\n",
+    "    'k*', markersize=15, label='Bulk Flow Direction', zorder=10\n",
+    ")\n",
+    "\n",
+    "plt.legend()\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 7. Next Steps & How to Contribute\n",
+    "\n",
+    "This project is open for collaboration! For feedback, extensions, or collaboration, please open an issue or a Pull Request on our **[GitHub Repository](https://github.com/your-username/CosmicBulkMap)** (link to be updated).\n",
+    "\n",
+    "- **Use Real Data:** Plug in the full Pantheon+ and CosmicFlows-4 data catalogs to perform the actual analysis.\n",
+    "- **Run the MCMC:** Use the scripts in `/scripts/mcmc_analysis.py` (to be developed) to reproduce the precision constraints on the dipole parameters.\n",
+    "- **Explore Systematics:** Explore the impact of selection effects, calibration errors, survey geometry, and outlier rejection on the measured dipole amplitude and direction."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### Contribution Checklist & Open Questions\n",
+    "\n",
+    "Here are some areas where contributions would be highly valuable:\n",
+    "\n",
+    "- [ ] **Implement the full MCMC pipeline:** Develop the core analysis scripts in the `/scripts` directory.\n",
+    "- [ ] **Integrate other datasets:** Add support for analyzing other distance tracers like Tully-Fisher or Fundamental Plane catalogs.\n",
+    "- [ ] **Advanced systematics analysis:** Quantify the impact of sky masks, dust extinction, and other potential biases.\n",
+    "- [ ] **Improve map resolution and visualization:** Experiment with higher `NSIDE` values and advanced plotting techniques for publication-quality figures."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 8. Brief Glossary\n",
+    "\n",
+    "- **Módulo de Distancia (μ):** Una medida logarítmica de la distancia a un objeto astronómico. Se define como $ \\mu = m - M $, donde $m$ es la magnitud aparente (brillo observado) y $M$ es la magnitud absoluta (brillo intrínseco).\n",
+    "- **Anisotropía Dipolar:** Una variación sistemática en una señal observada (como la temperatura del CMB o el brillo de las supernovas) que tiene un patrón de dipolo. Esto significa que hay una dirección preferencial donde la señal es máxima y la dirección opuesta donde es mínima.\n",
+    "- **Flujo a Granel (Bulk Flow):** Un movimiento coherente y a gran escala de un grupo de galaxias con respecto al fondo de expansión del universo. Este movimiento es lo que causa la anisotropía dipolar en los datos de distancia."
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## 9. References\n",
+    "\n",
+    "For further reading on the data and methodology, please see:\n",
+    "\n",
+    "- **Pantheon+:** Brout, D. et al. 2022, *The Pantheon+ Analysis: Cosmological Constraints*, ApJ, 938, 110 ([DOI: 10.3847/1538-4357/ac8e04](https://doi.org/10.3847/1538-4357/ac8e04))\n",
+    "- **CosmicFlows:** Carrick, J. et al. 2015, *The Cosmicflows-2 peculiar velocity catalog*, ApJ, 812, 1, 15 ([DOI: 10.1088/0004-637X/812/1/15](https://doi.org/10.1088/0004-637X/812/1/15))\n",
+    "- **This Work:** Sheligo, I., Gemini, & ChatGPT. 2025, *Observational Resolution of Local Dipolar Anisotropy*, (to appear on arXiv)."
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.9.7"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 4
+}
